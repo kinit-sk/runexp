@@ -1,0 +1,10 @@
+/.cache/*
+/.eggs/*
+/UNKNOWN*
+/build/*
+/dist/*
+**/__pycache__/*
+*.egg-info/*
+*.pyc
+.ipynb_checkpoints
+**/output
