@@ -1,11 +1,13 @@
 build_order:
-    - run_args
+  - run_args
 
 run_args:
-  project_name: disai-multimodal
+  project_name: runexp_sample_project
   experiment_class: ${method:runexp.DummyExperiment}
-  logger_class:
-    _partial_: true
-    _target_: runexp.MLFlowLogger
+  tracker:
+    _target_: runexp.MLFlowTracker
+    project_name: ${run_args.project_name}
+    experiment_name: ${run_args.experiment_name}
+    description: ${run_args.description}
     tracking_uri: sqlite:///mlruns/mlruns.db
    

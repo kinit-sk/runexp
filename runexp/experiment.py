@@ -10,21 +10,15 @@ class BaseExperiment(abc.ABC):
     def __call__(self):
         raise NotImplementedError
 
-class LoggedExperiment(BaseExperiment):
+class TrackedExperiment(BaseExperiment):
     def __init__(self, config, config_built):
         super().__init__(config, config_built)
-        run_args = self.config_built.run_args
+        self.tracker = self.config_built.run_args.tracker
+        self.tracker.setup(self.config)
 
-        self.logger = run_args.logger_class(
-            project_name=run_args.project_name,
-            experiment_name=run_args.experiment_name,
-            description=run_args.description,
-            config=self.config
-        )
-
-class DummyExperiment(LoggedExperiment):
+class DummyExperiment(TrackedExperiment):
     def __call__(self):
         print("This is a dummy experiment.")
         print("Config:")
         print(OmegaConf.to_yaml(self.config))
-        print("Log dir:", self.logger.log_dir)
+        print("Log dir:", self.tracker.log_dir)

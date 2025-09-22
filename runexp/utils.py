@@ -1,8 +1,9 @@
 import torch
 import random
+import importlib
 import numpy as np
 from omegaconf import OmegaConf
-from hydra.utils import get_method
+from hydra.utils import get_method, get_object
 
 # allow the use of eval: and method: in the configs
 # eval: allows for the evaluation of python code
@@ -15,6 +16,24 @@ from hydra.utils import get_method
 
 OmegaConf.register_new_resolver("eval", eval)
 OmegaConf.register_new_resolver("method", get_method)
+OmegaConf.register_new_resolver("object", get_object)
+
+#-------------------------------------------------------------------------------
+# Conditional import
+#-------------------------------------------------------------------------------
+
+def conditional_import(module_name, class_name, package=None):
+    """
+    Attempts to import a class from a module. Returns the class if found, else None.
+    """
+    try:
+        module = importlib.import_module(module_name, package)
+        return getattr(module, class_name)
+    except (ImportError, AttributeError):
+        return None
+
+# Example usage:
+# TrackerTrainerCallback = conditional_import('.trackers', 'TrackerTrainerCallback', __package__)
 
 #-------------------------------------------------------------------------------
 # Flatten dict
