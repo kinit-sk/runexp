@@ -27,6 +27,12 @@ pip install .
 python -m runexp
 ```
 
+E.g. to run experiment configured in configs/experiment1.yaml, one should run:
+
+```
+python -m runexp -cn experiment1.yaml
+```
+
 ### Configuration
 
 Find examples of how to setup your experiments and configuration files in `examples/`.
