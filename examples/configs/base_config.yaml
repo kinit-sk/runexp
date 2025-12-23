@@ -25,3 +25,17 @@ dataset:
   _target_: datasets.load_dataset
   path: AI-MO/NuminaMath-TIR
   split: train[:5%]
+
+# when using runexp with transformers/trl trainers, one can disable the
+# stock loggers and use a wrapped runexp.MLFlowTracker instead for best
+# compatibility
+
+# trainer:
+#   args:
+#     report_to: [] # we are logging to MLFlow
+#
+#   callbacks:
+#     -
+#       _target_: runexp.TrackerTrainerCallback
+#       tracker: ${run_args.tracker}
+#       log_artifacts: false  # logging of artifacts can optionally be disabled
