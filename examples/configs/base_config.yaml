@@ -1,5 +1,11 @@
 build_order:
   - run_args
+  - args
+  - seed # seed the experiment before model initialization, data shuffling, ...
+  - dataset
+
+args:
+  seed: 0
 
 run_args:
   project_name: runexp_sample_project
@@ -11,3 +17,11 @@ run_args:
     description: ${run_args.description}
     tracking_uri: sqlite:///mlruns/mlruns.db
    
+seed:
+  _target_: runexp.set_seed
+  seed: ${args.seed}
+  
+dataset:
+  _target_: datasets.load_dataset
+  path: AI-MO/NuminaMath-TIR
+  split: train[:5%]

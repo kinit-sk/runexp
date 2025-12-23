@@ -8,6 +8,6 @@ from .trackers import (
     WandbTracker, MLFlowTracker
 )
 from .runner import ExperimentRunner
-from .utils import conditional_import
+from .utils import conditional_import, set_seed
 
 TrackerTrainerCallback = conditional_import('.trackers', 'TrackerTrainerCallback', __package__)
