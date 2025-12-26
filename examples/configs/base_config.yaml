@@ -30,9 +30,13 @@ dataset:
 # stock loggers and use a wrapped runexp.MLFlowTracker instead for best
 # compatibility
 
+# one should also not forget to set the seed again separately for the trainer
+# or potentially even enable full determinism using `full_determinism: true`
+
 # trainer:
 #   args:
 #     report_to: [] # we are logging to MLFlow
+#     seed: ${args.seed}
 #
 #   callbacks:
 #     -
