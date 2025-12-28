@@ -1,8 +1,10 @@
+import os
 import torch
 import random
 import importlib
 import numpy as np
 from omegaconf import OmegaConf
+from hydra import compose, initialize_config_dir
 from hydra.utils import get_method, get_object
 
 # allow the use of eval: and method: in the configs
@@ -36,7 +38,7 @@ def conditional_import(module_name, class_name, package=None):
 # TrackerTrainerCallback = conditional_import('.trackers', 'TrackerTrainerCallback', __package__)
 
 #-------------------------------------------------------------------------------
-# Flatten dict
+# Flatten/unflatten dict
 #-------------------------------------------------------------------------------
 
 def flatten_dict(d, parent_key='', sep='.'):
@@ -48,6 +50,78 @@ def flatten_dict(d, parent_key='', sep='.'):
         else:
             items.append((new_key, v))
     return dict(items)
+
+def unflatten_dict(d):
+    result = {}
+    for key, value in d.items():
+        parts = key.split('.')
+        d = result
+        for part in parts[:-1]:
+            if part not in d:
+                d[part] = {}
+            d = d[part]
+
+        d[parts[-1]] = value
+    return result
+
+#-------------------------------------------------------------------------------
+# Config diff
+#-------------------------------------------------------------------------------
+
+def dict_diff(dict1, dict2):
+    """Computes the difference between two dicts. Note: you can use
+    flatten_dict() to flatten the dicts first."""
+    diff_dict = {}
+
+    for key in dict1:
+        if key not in dict2 or dict1[key] != dict2[key]:
+            diff_dict[key] = dict1[key]
+
+    return diff_dict
+
+def maybe_load_config(config, hydra_kwargs=None):
+    """
+    Loads a config if a string is provided, else returns the config as is.
+    Config can be either a loaded config or a config name passed as a string.
+    If a config name is passed, hydra_kwargs can be used to specify the
+    hydra initialize_config_dir parameters (e.g., config_dir).
+    """
+    if isinstance(config, str):
+        if hydra_kwargs is None:
+            hydra_kwargs = dict(
+                version_base=None,
+                config_dir=os.path.join(os.getcwd(), "configs")
+            )
+
+        with initialize_config_dir(**hydra_kwargs):
+            config = compose(config_name=config)
+
+    return config
+
+def config_diff(config1, config2, hydra_kwargs=None):
+    """
+    Computes the difference between two configs.
+    
+    Configs can be either loaded configs or config names passed as strings.
+    If config names are passed, hydra_kwargs can be used to specify the
+    hydra initialize_config_dir parameters (e.g., config_dir).
+    """
+    config1 = maybe_load_config(config1, hydra_kwargs=hydra_kwargs)
+    config2 = maybe_load_config(config2, hydra_kwargs=hydra_kwargs)
+
+    if type(config1) is not dict:
+        config1 = OmegaConf.to_container(config1, resolve=False)
+
+    if type(config2) is not dict:
+        config2 = OmegaConf.to_container(config2, resolve=False)
+
+    config1 = flatten_dict(config1)
+    config2 = flatten_dict(config2)
+
+    diff_dict = dict_diff(config1, config2)
+    diff_dict = unflatten_dict(diff_dict)
+
+    return diff_dict
 
 #-------------------------------------------------------------------------------
 # Random State Management
