@@ -67,7 +67,7 @@ class DummyTracker(ExperimentTracker):
         os.makedirs(checkpoint_path, exist_ok=True)
         self._log_dir = tempfile.TemporaryDirectory(dir=checkpoint_path)
 
-    def setup(self, config):
+    def setup(self, config=None):
         pass
 
     @property
@@ -87,14 +87,14 @@ class DummyTracker(ExperimentTracker):
         self._log_dir.cleanup()
 
 class WandbTracker(ExperimentTracker):
-    def setup(self, config):
+    def setup(self, config=None):
         import wandb
 
         self.wandb_run = wandb.init(
             project=self.project_name,
             name=self.experiment_name,
             notes=self.description,
-            config=flatten_dict(config)
+            config=flatten_dict(config) if config is not None else {},
         )
 
     @property
@@ -109,6 +109,9 @@ class WandbTracker(ExperimentTracker):
             self.wandb_run.summary[name] = value
 
     def log_artifact(self, path, name=None):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Artifact path does not exist: {path}")
+        
         return self.wandb_run.log_artifact(path, name=name)
 
     def finish(self):
@@ -126,7 +129,7 @@ class MLFlowTracker(ExperimentTracker):
         self.checkpoint_path = checkpoint_path
         super().__init__(project_name, experiment_name, description)
 
-    def setup(self, config):
+    def setup(self, config=None):
         from mlflow.tracking import MlflowClient
 
         os.makedirs(self.checkpoint_path, exist_ok=True)
@@ -153,13 +156,14 @@ class MLFlowTracker(ExperimentTracker):
         self.client.set_tag(self.run_id, "experiment_name", self.experiment_name)
         self.client.set_tag(self.run_id, "description", self.description)
 
-        config = flatten_dict(config)
+        if config is not None:
+            config = flatten_dict(config)
 
-        # TODO: we need to be able to restore the ~ to - in the keys
-        # when reconstructing the nested version of the config
-        for k, v in config.items():
-            k = k.replace("~", "-") # mlflow does not allow ~ in keys
-            self.client.log_param(self.run_id, k, v)
+            # TODO: we need to be able to restore the ~ to - in the keys
+            # when reconstructing the nested version of the config
+            for k, v in config.items():
+                k = k.replace("~", "-") # mlflow does not allow ~ in keys
+                self.client.log_param(self.run_id, k, v)
 
     @property
     def log_dir(self):
@@ -187,9 +191,34 @@ class MLFlowTracker(ExperimentTracker):
     def log_summary(self, metrics):
         for k, v in metrics.items():
             self.client.log_metric(self.run_id, "summary/" + k, v)
-    
+ 
+    @staticmethod
+    def _infer_name(path: str) -> str:
+        inferred = os.path.basename(os.path.normpath(path))
+        if not inferred:
+            raise ValueError(f"Could not infer artifact name from path: {path}")
+        return inferred
+
     def log_artifact(self, path, name=None):
-        return self.client.log_artifact(self.run_id, path, artifact_path=name)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Artifact path does not exist: {path}")
+        artifact_name = name if name is not None else self._infer_name(path)
+
+        if os.path.isfile(path):
+            # Store file under the artifact folder, no rename
+            return self.client.log_artifact(
+                run_id=self.run_id,
+                local_path=path,
+                artifact_path=artifact_name,
+            )
+        elif os.path.isdir(path):
+            return self.client.log_artifacts(
+                run_id=self.run_id,
+                local_dir=path,
+                artifact_path=artifact_name,
+            )
+        else:
+            raise ValueError(f"Path is neither file nor directory: {path}")
             
     def finish(self):
         self.client.set_terminated(self.run_id)
@@ -241,4 +270,4 @@ if importlib.util.find_spec("transformers") is not None:
             if state.is_world_process_zero and self._log_artifacts:
                 ckpt_dir = f"checkpoint-{state.global_step}"
                 artifact_path = os.path.join(args.output_dir, ckpt_dir)
-                self.tracker.log_artifact(artifact_path, name=ckpt_dir)
+                self.tracker.log_artifact(artifact_path)
