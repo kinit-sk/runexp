@@ -1,7 +1,7 @@
 import hydra
 from omegaconf import OmegaConf
 from .utils import flatten_dict
-from .config_processing import ConfigProcessor, RemoveNegKeysStep, MakePerTargetArgsStep
+from .config_processing import ConfigProcessor, RemoveDoubleNegKeysStep, RemoveNegKeysStep, MakePerTargetArgsStep
 
 _base_config = """
 build_order: ???
@@ -29,12 +29,18 @@ class ExperimentRunner:
         experiment_name=None,
         description=None,
         main=None,
-        config_processor='default'
+        config_preprocessor='default',
+        config_postprocessor='default'
     ):
-        if config_processor == 'default':
-            config_processor = ConfigProcessor([
+        if config_preprocessor == 'default':
+            config_preprocessor = ConfigProcessor([
                 RemoveNegKeysStep(),
                 MakePerTargetArgsStep()
+            ])
+
+        if config_postprocessor == 'default':
+            config_postprocessor = ConfigProcessor([
+                RemoveDoubleNegKeysStep()
             ])
 
         base_config = self.__class__.make_base_config()
@@ -57,8 +63,8 @@ class ExperimentRunner:
             config.run_args.main = main
 
         # preprocess the config
-        if not config_processor is None:
-            config = config_processor(config)
+        if not config_preprocessor is None:
+            config = config_preprocessor(config)
 
         build_order = config.build_order
         config._set_flag(flags=["allow_objects"], values=[True])
@@ -69,7 +75,12 @@ class ExperimentRunner:
             if not val is None:
                 config[k] = hydra.utils.instantiate(val, _convert_="object")
 
+        config = hydra.utils.instantiate(config)
         self.config_built = config
+
+        # postprocess the config
+        if not config_postprocessor is None:
+            self.config_built = config_postprocessor(self.config_built)
 
         missing_keys = OmegaConf.missing_keys(self.config_built)
         if missing_keys:

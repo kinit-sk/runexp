@@ -1,5 +1,6 @@
 import abc
 from omegaconf import OmegaConf
+from copy import copy
 
 class ProcessStep(abc.ABC):
     @abc.abstractmethod
@@ -15,13 +16,28 @@ class RemoveNegKeysStep(ProcessStep):
     
     def __call__(self, config):
         for key in list(config.keys()):
-            if key.startswith("~"):
+            if key.startswith("~") and not key.startswith("~~"):
                 config.pop(key, None)
 
                 if self.missing_ok:
                     config.pop(key[1:], None)
                 else:
                     del config[key[1:]]
+
+class RemoveDoubleNegKeysStep(ProcessStep):
+    def __init__(self, missing_ok=False):
+        self.missing_ok = missing_ok
+
+    def __call__(self, config):
+        for key in list(config.keys()):
+            if key.startswith("~~"):
+                config.pop(key, None)
+                config[key[2:]] = False
+
+                if self.missing_ok:
+                    config.pop(key[2:], None)
+                else:
+                    del config[key[2:]]
 
 class MakePerTargetArgsStep(ProcessStep):
     def __call__(self, config):
@@ -55,4 +71,4 @@ class ConfigProcessor:
     def __call__(self, config):
         config = OmegaConf.to_container(config, resolve=False)
         config = self._proc_config(config)
-        return OmegaConf.create(config)
+        return OmegaConf.create(config, flags={"allow_objects": True})
