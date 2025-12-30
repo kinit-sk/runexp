@@ -52,3 +52,5 @@ dataset:
 #    postprocessing stage, after everything has been built;
 #    this can be useful in decluttering the final config by
 #    getting rid of intermediate objects, etc.
+#  * We support a concat: resolver for concatenating lists:
+#    `test_list: ${concat:${list1},${list2}}`.
