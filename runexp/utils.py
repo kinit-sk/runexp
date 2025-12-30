@@ -20,6 +20,9 @@ OmegaConf.register_new_resolver("eval", eval)
 OmegaConf.register_new_resolver("method", get_method)
 OmegaConf.register_new_resolver("object", get_object)
 
+# list contatenation resolver
+OmegaConf.register_new_resolver("concat", lambda *xs: sum((list(x) for x in xs), []))
+
 #-------------------------------------------------------------------------------
 # Conditional import
 #-------------------------------------------------------------------------------
