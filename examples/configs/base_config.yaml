@@ -43,3 +43,12 @@ dataset:
 #       _target_: runexp.TrackerTrainerCallback
 #       tracker: ${run_args.tracker}
 #       log_artifacts: false  # logging of artifacts can optionally be disabled
+
+# Notes:
+#  * Prefixing a key with ~ means that it is going to be
+#    deleted at the preprocessing stage. This allows one
+#    to selectively remove items before things get instantiated.
+#  * Prefixing a key with ~~ means that it gets deleted at the
+#    postprocessing stage, after everything has been built;
+#    this can be useful in decluttering the final config by
+#    getting rid of intermediate objects, etc.
