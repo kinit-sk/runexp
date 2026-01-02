@@ -2,6 +2,7 @@ import hydra
 from omegaconf import OmegaConf
 from .utils import flatten_dict
 from .config_processing import ConfigProcessor, RemoveDoubleNegKeysStep, RemoveNegKeysStep, MakePerTargetArgsStep
+from collections.abc import Mapping
 
 _base_config = """
 build_order: ???
@@ -67,15 +68,20 @@ class ExperimentRunner:
             config = config_preprocessor(config)
 
         build_order = config.build_order
+
+        # If build_order is a dict (mapping), sort its items by value and
+        # assign the sorted keys as a list
+        if isinstance(build_order, Mapping):
+            build_order = [k for k, v in sorted(build_order.items(), key=lambda item: item[1])]
+
         config._set_flag(flags=["allow_objects"], values=[True])
 
-        # instantiate everything in the config to set up the trainer
+        # instantiate everything according to the build order
         for k in build_order:
             val = config.get(k, None)
             if not val is None:
                 config[k] = hydra.utils.instantiate(val, _convert_="object")
 
-        config = hydra.utils.instantiate(config)
         self.config_built = config
 
         # postprocess the config

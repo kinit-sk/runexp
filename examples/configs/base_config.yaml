@@ -1,8 +1,28 @@
+# it is necessary to specify the order in which the config should be built;
+# e.g. if one builds a model, which is then used in two other components, the
+# model needs to be instantiated first so that the other two components get the
+# same shared object instead of reconstructing the model twice
+
 build_order:
   - run_args
   - args
   - seed # seed the experiment before model initialization, data shuffling, ...
   - dataset
+
+# alternatively, you can specify build_order as a priority dict:
+#
+# build_order:
+#   run_args: 1
+#   args: 2
+#   seed: 3
+#   dataset: 4
+#
+# this makes it easier to extend the build order in derived configs, one can
+# insert a new step and make its priority fall between two existing items, e.g.
+#
+# build_order:
+#   optimizer: 3.5
+#
 
 args:
   seed: 0
