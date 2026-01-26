@@ -12,3 +12,4 @@ from .utils import conditional_import, set_seed
 from.list_compose import compose_list
 
 TrackerTrainerCallback = conditional_import('.trackers', 'TrackerTrainerCallback', __package__)
+TorchRLTrackerLogger = conditional_import('.trackers', 'TorchRLTrackerLogger', __package__)

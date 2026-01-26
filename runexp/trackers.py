@@ -271,3 +271,112 @@ if importlib.util.find_spec("transformers") is not None:
                 ckpt_dir = f"checkpoint-{state.global_step}"
                 artifact_path = os.path.join(args.output_dir, ckpt_dir)
                 self.tracker.log_artifact(artifact_path)
+
+#------------------------------------------------------------------------------
+# Integration with torchrl loggers
+#------------------------------------------------------------------------------
+
+if importlib.util.find_spec("torchrl") is not None:
+    from collections.abc import Sequence
+
+    from torch import Tensor
+    from torchrl.record.loggers.common import Logger
+
+    class TorchRLTrackerLogger(Logger):
+        """torchrl Logger wrapper for runexp ExperimentTracker."""
+
+        def __init__(
+            self,
+            tracker: ExperimentTracker,
+            *,
+            setup: bool = False,
+            config=None,
+            video_fps: int = 30,
+        ) -> None:
+            self.tracker = tracker
+            self.video_fps = video_fps
+            if setup:
+                self.tracker.setup(config)
+            super().__init__(exp_name=tracker.experiment_name, log_dir=tracker.log_dir)
+
+        def _create_experiment(self) -> ExperimentTracker:
+            return self.tracker
+
+        def log_scalar(self, name: str, value: float, step: int | None = None) -> None:
+            self.tracker.log_metrics({name: value}, step=step)
+
+        def log_video(
+            self, name: str, video: Tensor, step: int | None = None, **kwargs
+        ) -> None:
+            try:
+                import torchvision
+            except ImportError as exc:
+                raise ImportError(
+                    "Logging a video requires torchvision to be installed."
+                ) from exc
+
+            if video.ndim == 5:
+                video = video[-1]  # N T C H W -> T C H W
+            video = video.detach().cpu().permute(0, 2, 3, 1)  # T C H W -> T H W C
+            if video.size(dim=-1) != 3:
+                raise ValueError("Only videos with 3 color channels are supported.")
+
+            fps = kwargs.pop("fps", self.video_fps)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                filename = f"{name}_step_{step:04}.mp4" if step is not None else f"{name}.mp4"
+                path = os.path.join(temp_dir, filename)
+                torchvision.io.write_video(filename=path, video_array=video, fps=fps)
+                self.tracker.log_artifact(path, name=filename)
+
+        def log_hparams(self, cfg) -> None:
+            if cfg is None:
+                return
+
+            cfg_dict = cfg
+            if type(cfg) is not dict:
+                try:
+                    from omegaconf import OmegaConf
+
+                    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+                except Exception:
+                    cfg_dict = {"hparams": cfg}
+
+            if isinstance(cfg_dict, dict):
+                flat = flatten_dict(cfg_dict)
+            else:
+                flat = {"hparams": cfg_dict}
+
+            numeric = {
+                k: v for k, v in flat.items() if isinstance(v, (int, float))
+            }
+            if numeric:
+                self.tracker.log_summary(
+                    {f"hparams/{k}": v for k, v in numeric.items()}
+                )
+
+            try:
+                import json
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    path = os.path.join(temp_dir, "hparams.json")
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(
+                            cfg_dict,
+                            f,
+                            indent=2,
+                            sort_keys=True,
+                            ensure_ascii=True,
+                            default=str,
+                        )
+                    self.tracker.log_artifact(path, name="hparams.json")
+            except Exception:
+                pass
+
+        def __repr__(self) -> str:
+            return (
+                f"TorchRLTrackerLogger(exp_name={self.exp_name}, "
+                f"tracker={self.tracker.__class__.__name__})"
+            )
+
+        def log_histogram(self, name: str, data: Sequence, **kwargs):
+            raise NotImplementedError("Histogram logging is not supported.")
