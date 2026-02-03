@@ -237,10 +237,24 @@ if importlib.util.find_spec("transformers") is not None:
         A [`TrainerCallback`] that sends the logs to a RunExp logger.
         """
 
-        def __init__(self, tracker: ExperimentTracker, log_artifacts: bool = True):
+        def __init__(
+            self,
+            tracker,
+            log_artifacts: bool = True,
+            log_final_model: bool = False,
+            log_best_model: bool = False,
+            final_name: str = "final-checkpoint",
+            best_name: str = "best-checkpoint",
+        ):
             super().__init__()
             self.tracker = tracker
             self._log_artifacts = log_artifacts
+            self._log_final_model = log_final_model
+            self._log_best_model = log_best_model
+            self._final_name = final_name
+            self._best_name = best_name
+
+            self._logged_final = False
 
         def on_log(self, args, state, control, model=None, logs=None, **kwargs):
             single_value_scalars = [
@@ -267,10 +281,38 @@ if importlib.util.find_spec("transformers") is not None:
                 self.tracker.log_metrics(metrics, step=state.global_step)
 
         def on_save(self, args, state, control, **kwargs):
-            if state.is_world_process_zero and self._log_artifacts:
+            if not state.is_world_process_zero:
+                return
+                
+            if self._log_artifacts:
                 ckpt_dir = f"checkpoint-{state.global_step}"
                 artifact_path = os.path.join(args.output_dir, ckpt_dir)
                 self.tracker.log_artifact(artifact_path)
+
+            if self._log_final_model and state.global_step >= state.max_steps and not self._logged_final:
+                ckpt_dir = f"checkpoint-{state.global_step}"
+                artifact_path = os.path.join(args.output_dir, ckpt_dir)
+                self.tracker.log_artifact(artifact_path, name=self._final_name)
+                self._logged_final = True
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if self._log_final_model and state.global_step >= state.max_steps:
+                control.should_save = True
+            return control
+        
+        def on_train_end(self, args, state, control, **kwargs):
+            if not state.is_world_process_zero:
+                return
+
+            if self._log_best_model:
+                best_ckpt = getattr(state, "best_model_checkpoint", None)
+                if best_ckpt:
+                    self.tracker.log_artifact(best_ckpt, name=self._best_name)
+
+            best_step = getattr(state, "best_global_step", None)
+
+            if best_step:
+                self.tracker.log_summary({"best_global_step": best_step})
 
 #------------------------------------------------------------------------------
 # Integration with torchrl loggers
