@@ -95,6 +95,6 @@ class ExperimentRunner:
     def __call__(self):
         experiment_class = self.config_built.run_args.experiment_class
         config = OmegaConf.to_container(self.config)
-        experiment = experiment_class(config, self.config_built)
-        return experiment()
+        with experiment_class(config, self.config_built) as experiment:
+            return experiment()
     

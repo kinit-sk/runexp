@@ -4,8 +4,13 @@ import re
 import shutil
 import tempfile
 import importlib.util
+import concurrent.futures
+import threading
+import time
 from abc import ABCMeta, abstractmethod
 from .utils import flatten_dict, RandomStatePreserver, preserve_random_state
+
+logger = logging.getLogger(__name__)
 
 class ExperimentTrackerMeta(ABCMeta):
     def __init__(cls, name, bases, dct):
@@ -94,10 +99,19 @@ class WandbTracker(ExperimentTracker):
         experiment_name,
         description,
         artifact_mode="files",
+        artifact_upload_workers=2,
+        artifact_progress_interval=10,
     ):
         if artifact_mode not in {"files", "artifacts"}:
             raise ValueError("artifact_mode must be either 'files' or 'artifacts'")
         self.artifact_mode = artifact_mode
+        self.artifact_upload_workers = artifact_upload_workers
+        self.artifact_progress_interval = artifact_progress_interval
+        self._artifact_upload_executor = None
+        self._artifact_uploads = []
+        self._artifact_staging_dirs = []
+        self._artifact_upload_lock = threading.Lock()
+        self._finished = False
         super().__init__(project_name, experiment_name, description)
 
     def setup(self, config=None):
@@ -154,24 +168,237 @@ class WandbTracker(ExperimentTracker):
         except OSError:
             shutil.copy2(src, dst)
 
+    @staticmethod
+    def _format_bytes(size):
+        value = float(size)
+        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+            if value < 1024 or unit == "TiB":
+                return f"{value:.1f} {unit}"
+            value /= 1024
+        return f"{value:.1f} TiB"
+
+    @staticmethod
+    def _logical_path(*parts):
+        return "/".join(str(part).strip("/") for part in parts if str(part).strip("/"))
+
+    @staticmethod
+    def _progress_bar(done, total, width=24):
+        if total <= 0:
+            return "[" + (" " * width) + "]   0.0%"
+        fraction = min(1.0, max(0.0, done / total))
+        filled = int(round(fraction * width))
+        return "[" + ("#" * filled) + ("." * (width - filled)) + f"] {fraction * 100:5.1f}%"
+
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = int(max(0, seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:d}:{seconds:02d}"
+
+    def _get_artifact_upload_executor(self):
+        if self._artifact_upload_executor is None:
+            self._artifact_upload_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.artifact_upload_workers,
+                thread_name_prefix="runexp-wandb-upload",
+            )
+        return self._artifact_upload_executor
+
+    def _make_artifact_staging_dir(self, path):
+        parent = os.path.dirname(os.path.abspath(self.log_dir))
+        try:
+            staging_dir = tempfile.TemporaryDirectory(
+                prefix=".runexp-wandb-upload-",
+                dir=parent,
+            )
+        except OSError:
+            staging_dir = tempfile.TemporaryDirectory(prefix=".runexp-wandb-upload-")
+
+        self._artifact_staging_dirs.append(staging_dir)
+        return staging_dir.name
+
+    def _upload_run_file(self, upload):
+        from wandb.sdk.internal.internal_api import Api as InternalApi
+        from wandb.sdk.lib.paths import LogicalPath
+
+        api = InternalApi(
+            default_settings={
+                "entity": upload["entity"],
+                "project": upload["project"],
+            }
+        )
+        api.set_current_run_id(upload["run_id"])
+
+        def progress(_chunk_bytes, uploaded_bytes):
+            with self._artifact_upload_lock:
+                upload["uploaded"] = uploaded_bytes
+
+        try:
+            with open(upload["path"], "rb") as file:
+                api.push(
+                    {LogicalPath(upload["name"]): file},
+                    run=upload["run_id"],
+                    entity=upload["entity"],
+                    project=upload["project"],
+                    progress=progress,
+                )
+        except Exception as exc:
+            with self._artifact_upload_lock:
+                upload["failed"] = True
+                upload["error"] = exc
+            logger.exception("Failed to upload W&B run file %s", upload["name"])
+            raise
+        else:
+            with self._artifact_upload_lock:
+                upload["uploaded"] = upload["size"]
+                upload["done"] = True
+            return upload["name"]
+
     def _log_artifact_as_files(self, path, artifact_name):
         saved = []
-        staging_dir = self.log_dir
-        for rel_path, file_path in self._relative_files(path):
-            staged_path = os.path.join(staging_dir, artifact_name, rel_path)
+        staging_dir = self._make_artifact_staging_dir(path)
+        executor = self._get_artifact_upload_executor()
+        files = sorted(self._relative_files(path), key=lambda item: item[0])
+
+        logger.info(
+            "Queueing W&B run-file upload path=%s name=%s files=%s size=%s",
+            path,
+            artifact_name,
+            len(files),
+            self._format_bytes(sum(os.path.getsize(file_path) for _, file_path in files)),
+        )
+
+        for rel_path, file_path in files:
+            save_name = self._logical_path(artifact_name, rel_path)
+            staged_path = os.path.join(staging_dir, save_name)
             self._hardlink_or_copy(file_path, staged_path)
-            saved.extend(
-                self.wandb_run.save(
-                    staged_path,
-                    base_path=staging_dir,
-                    policy="now",
-                )
-            )
+            upload = {
+                "name": save_name,
+                "path": staged_path,
+                "size": os.path.getsize(staged_path),
+                "uploaded": 0,
+                "done": False,
+                "failed": False,
+                "error": None,
+                "run_id": self.wandb_run.id,
+                "entity": self.wandb_run.entity,
+                "project": self.wandb_run.project,
+            }
+            self._artifact_uploads.append(upload)
+            upload["future"] = executor.submit(self._upload_run_file, upload)
+            saved.append(save_name)
 
         return saved
 
+    def _artifact_upload_summary(self):
+        with self._artifact_upload_lock:
+            total = sum(upload["size"] for upload in self._artifact_uploads)
+            uploaded = sum(upload["uploaded"] for upload in self._artifact_uploads)
+            done = sum(1 for upload in self._artifact_uploads if upload["done"])
+            failed = [upload for upload in self._artifact_uploads if upload["failed"]]
+            count = len(self._artifact_uploads)
+        return uploaded, total, done, count, failed
+
+    def _wait_for_artifact_uploads(self):
+        if not self._artifact_uploads:
+            return
+
+        started = time.monotonic()
+        progress = None
+        last_uploaded = 0
+        next_log = 0
+        try:
+            from tqdm.auto import tqdm
+
+            _, total, _, count, _ = self._artifact_upload_summary()
+            progress = tqdm(
+                total=total,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc="W&B upload",
+                dynamic_ncols=True,
+                leave=True,
+            )
+            progress.set_postfix_str(f"files 0/{count}")
+        except Exception:
+            progress = None
+
+        try:
+            while True:
+                uploaded, total, done, count, failed = self._artifact_upload_summary()
+                now = time.monotonic()
+                delta = max(0, uploaded - last_uploaded)
+                if progress is not None and delta:
+                    progress.update(delta)
+                    progress.set_postfix_str(f"files {done}/{count}")
+                last_uploaded = uploaded
+
+                if failed:
+                    break
+                if done >= count:
+                    break
+                if progress is None and now >= next_log:
+                    elapsed = now - started
+                    rate = uploaded / elapsed if elapsed > 0 else 0
+                    remaining = (total - uploaded) / rate if rate > 0 else 0
+                    logger.info(
+                        "W&B run-file upload progress %s %s/%s, files %s/%s, elapsed %s, eta %s",
+                        self._progress_bar(uploaded, total),
+                        self._format_bytes(uploaded),
+                        self._format_bytes(total),
+                        done,
+                        count,
+                        self._format_duration(elapsed),
+                        self._format_duration(remaining),
+                    )
+                    next_log = now + self.artifact_progress_interval
+                time.sleep(0.5)
+        finally:
+            if progress is not None:
+                uploaded, _, done, count, _ = self._artifact_upload_summary()
+                delta = max(0, uploaded - last_uploaded)
+                if delta:
+                    progress.update(delta)
+                progress.set_postfix_str(f"files {done}/{count}")
+                progress.close()
+
+        for upload in self._artifact_uploads:
+            upload["future"].result()
+
+        uploaded, total, done, count, _ = self._artifact_upload_summary()
+        logger.info(
+            "W&B run-file uploads complete %s %s/%s, files %s/%s",
+            self._progress_bar(uploaded, total),
+            self._format_bytes(uploaded),
+            self._format_bytes(total),
+            done,
+            count,
+        )
+
     def finish(self):
-        self.wandb_run.finish()
+        if self._finished:
+            return
+        self._finished = True
+        upload_error = None
+        try:
+            try:
+                self._wait_for_artifact_uploads()
+            except Exception as exc:
+                upload_error = exc
+            if self._artifact_upload_executor is not None:
+                self._artifact_upload_executor.shutdown(
+                    wait=upload_error is None,
+                    cancel_futures=upload_error is not None,
+                )
+            self.wandb_run.finish()
+        finally:
+            while self._artifact_staging_dirs:
+                self._artifact_staging_dirs.pop().cleanup()
+        if upload_error is not None:
+            raise upload_error
 
 class MLFlowTracker(ExperimentTracker):
     def __init__(self,
