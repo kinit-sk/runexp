@@ -1,4 +1,6 @@
 import os
+import shutil
+import tempfile
 from abc import ABC, abstractmethod
 import numpy as np
 from omegaconf import OmegaConf
@@ -58,8 +60,16 @@ class LogInspector(ABC):
         raise NotImplementedError
 
 class WandbLogInspector(LogInspector):
-    def __init__(self, entity=None, project_name: str|None = None, wandb_api=None):
+    def __init__(
+        self,
+        entity=None,
+        project_name: str|None = None,
+        wandb_api=None,
+        artifact_mode="files",
+    ):
         super().__init__()
+        if artifact_mode not in {"files", "artifacts"}:
+            raise ValueError("artifact_mode must be either 'files' or 'artifacts'")
         
         if wandb_api is None:
             import wandb
@@ -68,6 +78,7 @@ class WandbLogInspector(LogInspector):
         self.api = wandb_api
         self.entity = entity
         self.project_name = project_name
+        self.artifact_mode = artifact_mode
 
     def set_project(self, project_name):
         self.project_name = project_name
@@ -155,6 +166,21 @@ class WandbLogInspector(LogInspector):
         return OmegaConf.create(config)
 
     def list_artifacts(self, run, return_raw=False, **kwargs):
+        if self.artifact_mode == "files":
+            files = list(run.files(**kwargs))
+
+            if return_raw:
+                return files
+
+            artifacts = set()
+            for file in files:
+                name = file.name.strip("/")
+                if not name or "/" not in name:
+                    continue
+                artifacts.add(name.split("/", 1)[0])
+
+            return sorted(artifacts)
+
         artifacts = run.logged_artifacts(**kwargs)
 
         if return_raw:
@@ -165,6 +191,35 @@ class WandbLogInspector(LogInspector):
     def download_artifact(self, run, name, dest_path):
         root = Path(dest_path)
         root.mkdir(parents=True, exist_ok=True)
+
+        if self.artifact_mode == "files":
+            prefix = name.strip("/")
+            files = list(run.files(pattern=f"{prefix}/%"))
+
+            if len(files) == 0:
+                files = list(run.files(names=[prefix]))
+
+            if len(files) == 0:
+                raise FileNotFoundError(f"Artifact not found in run files: {name}")
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                for file in files:
+                    handle = file.download(root=temp_dir, replace=True)
+                    handle.close()
+                    downloaded_path = Path(temp_dir) / file.name
+                    rel_path = Path(file.name)
+
+                    if rel_path.parts and rel_path.parts[0] == prefix:
+                        rel_path = Path(*rel_path.parts[1:])
+
+                    if str(rel_path) == ".":
+                        rel_path = Path(os.path.basename(file.name))
+
+                    target_path = root / rel_path
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(downloaded_path, target_path)
+
+            return str(root)
 
         if self.entity is None:
             artifact_path = f"{self.project_name}/{name}"

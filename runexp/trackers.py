@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import tempfile
 import importlib.util
 from abc import ABCMeta, abstractmethod
@@ -87,6 +88,18 @@ class DummyTracker(ExperimentTracker):
         self._log_dir.cleanup()
 
 class WandbTracker(ExperimentTracker):
+    def __init__(
+        self,
+        project_name,
+        experiment_name,
+        description,
+        artifact_mode="files",
+    ):
+        if artifact_mode not in {"files", "artifacts"}:
+            raise ValueError("artifact_mode must be either 'files' or 'artifacts'")
+        self.artifact_mode = artifact_mode
+        super().__init__(project_name, experiment_name, description)
+
     def setup(self, config=None):
         import wandb
 
@@ -111,8 +124,51 @@ class WandbTracker(ExperimentTracker):
     def log_artifact(self, path, name=None):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Artifact path does not exist: {path}")
-        
-        return self.wandb_run.log_artifact(path, name=name)
+
+        if self.artifact_mode == "artifacts":
+            return self.wandb_run.log_artifact(path, name=name)
+
+        artifact_name = name if name is not None else MLFlowTracker._infer_name(path)
+        return self._log_artifact_as_files(path, artifact_name)
+
+    @staticmethod
+    def _relative_files(path):
+        if os.path.isfile(path):
+            yield os.path.basename(path), path
+            return
+
+        if os.path.isdir(path):
+            for root, _, files in os.walk(path):
+                for filename in files:
+                    file_path = os.path.join(root, filename)
+                    yield os.path.relpath(file_path, path), file_path
+            return
+
+        raise ValueError(f"Path is neither file nor directory: {path}")
+
+    @staticmethod
+    def _hardlink_or_copy(src, dst):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+
+    def _log_artifact_as_files(self, path, artifact_name):
+        saved = []
+        staging_dir = self.log_dir
+        for rel_path, file_path in self._relative_files(path):
+            staged_path = os.path.join(staging_dir, artifact_name, rel_path)
+            self._hardlink_or_copy(file_path, staged_path)
+            saved.extend(
+                self.wandb_run.save(
+                    staged_path,
+                    base_path=staging_dir,
+                    policy="now",
+                )
+            )
+
+        return saved
 
     def finish(self):
         self.wandb_run.finish()
