@@ -101,12 +101,14 @@ class WandbTracker(ExperimentTracker):
         artifact_mode="files",
         artifact_upload_workers=2,
         artifact_progress_interval=10,
+        namespace_summary: bool = True,
     ):
         if artifact_mode not in {"files", "artifacts"}:
             raise ValueError("artifact_mode must be either 'files' or 'artifacts'")
         self.artifact_mode = artifact_mode
         self.artifact_upload_workers = artifact_upload_workers
         self.artifact_progress_interval = artifact_progress_interval
+        self.namespace_summary = namespace_summary
         self._artifact_upload_executor = None
         self._artifact_uploads = []
         self._artifact_staging_dirs = []
@@ -133,7 +135,8 @@ class WandbTracker(ExperimentTracker):
 
     def log_summary(self, metrics):
         for name, value in metrics.items():
-            self.wandb_run.summary[name] = value
+            key = "summary/" + name if self.namespace_summary else name
+            self.wandb_run.summary[key] = value
 
     def log_artifact(self, path, name=None):
         if not os.path.exists(path):

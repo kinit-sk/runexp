@@ -66,6 +66,7 @@ class WandbLogInspector(LogInspector):
         project_name: str|None = None,
         wandb_api=None,
         artifact_mode="files",
+        namespace_summary: bool = True,
     ):
         super().__init__()
         if artifact_mode not in {"files", "artifacts"}:
@@ -79,6 +80,7 @@ class WandbLogInspector(LogInspector):
         self.entity = entity
         self.project_name = project_name
         self.artifact_mode = artifact_mode
+        self.namespace_summary = namespace_summary
 
     def set_project(self, project_name):
         self.project_name = project_name
@@ -121,7 +123,12 @@ class WandbLogInspector(LogInspector):
                 continue
 
             for metric in metrics:
-                metrics[metric].append(run.summary[metric])
+                summary_key = "summary/" + metric if self.namespace_summary else metric
+                fallback_key = metric if self.namespace_summary else "summary/" + metric
+                if summary_key in run.summary:
+                    metrics[metric].append(run.summary[summary_key])
+                else:
+                    metrics[metric].append(run.summary[fallback_key])
 
         for metric in metrics:
             metrics[metric] = np.array(metrics[metric])
