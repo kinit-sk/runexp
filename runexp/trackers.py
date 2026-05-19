@@ -134,9 +134,12 @@ class WandbTracker(ExperimentTracker):
         return self.wandb_run.log(metrics, step=step, commit=commit)
 
     def log_summary(self, metrics):
+        summary = {}
         for name, value in metrics.items():
             key = "summary/" + name if self.namespace_summary else name
-            self.wandb_run.summary[key] = value
+            summary[key] = value
+        if summary:
+            self.wandb_run.summary.update(summary)
 
     def log_artifact(self, path, name=None):
         if not os.path.exists(path):
